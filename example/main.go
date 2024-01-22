@@ -1,10 +1,5 @@
-# Skiplist
+package main
 
-simple skiplist implementation
-
-# Usage
-
-```go
 import (
 	"fmt"
 
@@ -24,4 +19,3 @@ func main() {
 	c := sl.Get(10)
 	fmt.Printf("%v, %v\n", a, c)
 }
-```
