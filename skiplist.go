@@ -2,6 +2,8 @@ package skiplist
 
 import (
 	"math/rand"
+	"sync"
+	"sync/atomic"
 
 	"golang.org/x/exp/constraints"
 )
@@ -12,10 +14,11 @@ var (
 )
 
 type SkipList[T constraints.Ordered] struct {
-	len       int
+	len       atomic.Int32
 	level     int
 	head      *Node[T]
 	skipListP float64
+	mutex     sync.RWMutex
 }
 
 type Node[T constraints.Ordered] struct {
@@ -24,25 +27,55 @@ type Node[T constraints.Ordered] struct {
 	next  []*Node[T]
 }
 
-func New[T constraints.Ordered]() *SkipList[T] {
-	defaultSL := &SkipList[T]{
-		level:     MAX_LEVEL,
-		skipListP: SKIPLIST_P,
-		head: &Node[T]{
-			next: make([]*Node[T], MAX_LEVEL),
-		},
+func WithMaxLevel(maxLevel int) Option {
+	return func(o *options) {
+		o.MaxLevel = maxLevel
 	}
-	return defaultSL
+}
+
+func WithSkipListP(skipListP float64) Option {
+	return func(o *options) {
+		o.SkipListP = skipListP
+	}
+}
+
+func New[T constraints.Ordered](opts ...Option) *SkipList[T] {
+
+	op := NewOptions()
+
+	for _, opt := range opts {
+		opt(op)
+	}
+
+	sl := &SkipList[T]{
+		level:     op.MaxLevel,
+		skipListP: op.SkipListP,
+		head: &Node[T]{
+			next: make([]*Node[T], op.MaxLevel),
+		},
+		len: atomic.Int32{},
+	}
+	return sl
 }
 
 func (s *SkipList[T]) Len() int {
-	return s.len
+	return int(s.len.Load())
 }
 
 func (sl *SkipList[T]) Get(key T) any {
-	if sl.head == nil || sl.len == 0 {
+	sl.mutex.RLock()
+	defer sl.mutex.RUnlock()
+	if node := sl.find(key); node != nil {
+		return node.Value
+	}
+	return nil
+}
+
+func (sl *SkipList[T]) find(key T) *Node[T] {
+	if sl.head == nil || sl.len.Load() == 0 {
 		return nil
 	}
+
 	node := sl.head
 	for i := sl.level - 1; i >= 0; i-- {
 		// 从最高层开始往下查找
@@ -51,7 +84,7 @@ func (sl *SkipList[T]) Get(key T) any {
 			node = node.next[i]
 		}
 		if node.next[i] != nil && node.next[i].Key == key {
-			return node.next[i].Value
+			return node.next[i]
 		}
 	}
 	return nil
@@ -66,8 +99,15 @@ func (sl *SkipList[T]) randomLevel() int {
 	return level
 }
 
-func (sl *SkipList[T]) Insert(key T, value any) {
+func (sl *SkipList[T]) Put(key T, value any) {
 	if value == nil {
+		return
+	}
+	sl.mutex.Lock()
+	defer sl.mutex.Unlock()
+
+	if node := sl.find(key); node != nil {
+		node.Value = value
 		return
 	}
 	level := sl.randomLevel()
@@ -87,15 +127,18 @@ func (sl *SkipList[T]) Insert(key T, value any) {
 		newNode.next[i] = node.next[i]
 		node.next[i] = newNode
 	}
-	sl.len += 1
+	sl.len.Add(1)
 }
 
 func (sl *SkipList[T]) Delete(key T) {
-	if sl.head == nil || sl.len == 0 {
+	if sl.head == nil || sl.len.Load() == 0 {
 		return
 	}
+	sl.mutex.Lock()
+	defer sl.mutex.Unlock()
+
 	node := sl.head
-	for i := sl.level; i >= 0; i-- {
+	for i := sl.level - 1; i >= 0; i-- {
 		// 从最高层开始往下查找
 		for node.next[i] != nil && node.next[i].Key < key {
 			// 当前层往右查找
@@ -106,20 +149,26 @@ func (sl *SkipList[T]) Delete(key T) {
 			node.next[i] = node.next[i].next[i]
 		}
 	}
-	sl.len -= 1
+	sl.len.Add(-1)
 }
 
 func (sl *SkipList[T]) Range(start, end T) []any {
-
-	if sl.head == nil || sl.len == 0 {
+	if sl.head == nil || sl.len.Load() == 0 {
 		return nil
 	}
+	sl.mutex.RLock()
+	defer sl.mutex.RUnlock()
+
 	node := sl.head
-	for i := sl.level; i >= 0; i-- {
+	for i := sl.level - 1; i >= 0; i-- {
 		// 从最高层开始往下查找
 		for node.next[i] != nil && node.next[i].Key < start {
 			// 当前层往右查找
 			node = node.next[i]
+		}
+		if node.next[i] != nil && node.next[i].Key == start {
+			node = node.next[i]
+			break
 		}
 	}
 	var result []any
